@@ -47,30 +47,32 @@ const WEAPONS = {
     rifle: {
         name: 'AR-15',
         type: 'gun',
-        damageClose: 30,
-        damageFar: 20,
+        damageClose: 28,
+        damageFar: 18,
         falloffStart: 20,
         falloffEnd: 50,
-        fireRate: 150,
+        fireRate: 100,
         magSize: 30,
         reloadTime: 2000,
-        spread: 0.02,
+        spread: 0.04,
         color: 0x555555,
-        scale: { x: 0.06, y: 0.12, z: 0.7 }
+        scale: { x: 0.06, y: 0.12, z: 0.7 },
+        isAutomatic: true
     },
     smg: {
         name: 'MP5',
         type: 'gun',
-        damageClose: 18,
-        damageFar: 12,
+        damageClose: 16,
+        damageFar: 10,
         falloffStart: 10,
         falloffEnd: 25,
-        fireRate: 120,
+        fireRate: 60,
         magSize: 30,
         reloadTime: 1800,
-        spread: 0.05,
+        spread: 0.03,
         color: 0x666666,
-        scale: { x: 0.05, y: 0.1, z: 0.4 }
+        scale: { x: 0.05, y: 0.1, z: 0.4 },
+        isAutomatic: true
     },
     magnum: {
         name: 'Magnum',
@@ -142,6 +144,34 @@ const LEON_ANIMATIONS = {
     shotgun_idle: 'shotgun_idle',
     shotgun_walk: 'shotgun_walk_1', // Use second shotgun_walk for forward (1.333s)
     shotgun_run: 'shotgun_run'
+};
+
+// --- CLAIRE ANIMATIONS MAPPING ---
+const CLAIRE_ANIMATIONS = {
+    dance1: 'dance1',
+    dance2: 'dance2',
+    death: 'death',
+    hit_pistol1: 'hit_pistol1',
+    hit_pistol2: 'hit_pistol2',
+    knife_back: 'knife_back',
+    knife_death: 'knife_death',
+    knife_idle: 'knife_idle',
+    knife_run: 'knife_run',
+    knife_stab: 'knife_stab',
+    knife_walk: 'knife_walk',
+    pistol_aim: 'pistol_aim',
+    pistol_back: 'pistol_back',
+    pistol_death: 'pistol_death',
+    pistol_idle: 'pistol_idle',
+    pistol_walk: 'pistol_walk',
+    pistol_run: 'pistol_run',
+    reload: 'reload',
+    smg_aim: 'smg_aim',
+    smg_back: 'smg_back',
+    smg_death: 'smg_death',
+    smg_idle: 'smg_idle',
+    smg_run: 'smg_run',
+    smg_walk: 'smg_walk'
 };
 
 // --- ZOMBIE ANIMATOR CLASS ---
@@ -240,6 +270,10 @@ let cameraPitch = 0; // Camera pitch rotation (vertical) for aiming
 let leonModel = null;
 let leonAnimator = null;
 
+// Claire model and animations
+let claireModel = null;
+let claireAnimator = null;
+
 let gameState = {
     isPlaying: false, isPaused: false, isDead: false,
     hp: 60, maxHp: 60,
@@ -261,6 +295,8 @@ let gameState = {
     lastHitTime: 0,
     isDancing: false,
     lastStabIndex: -1, // Track which stab animation was last used
+    lastDanceAnimation: null, // Track which dance animation was last used for Claire
+    lastHitAnimation: null, // Track which hit animation was last used for Claire
     shotgunAdsPlayed: false, // Track if ads animation has been played
     
     // Quickturn State
@@ -385,11 +421,28 @@ class LeonAnimator {
             }
         }
         
-        // Try partial match
+        // Try partial match (search for animation containing the target name)
         for (let key of keys) {
             if (key.toLowerCase().includes(lowerTarget)) {
-                console.log(`Using partial match: ${targetName} -> ${key}`);
-                return key;
+                // Skip if it's just a numbered variant we haven't tried yet
+                // e.g., looking for "pistol_walk" might match "pistol_walk_1" or "pistol_walk.001"
+                const keyWithoutNumbers = key.replace(/[_.\d]+$/g, '');
+                if (keyWithoutNumbers.toLowerCase() === lowerTarget) {
+                    return key;
+                }
+            }
+        }
+        
+        // Ultimate fallback: try to match the core concept
+        // e.g., for "pistol_idle", try to find any animation with "pistol" and "idle"
+        const parts = lowerTarget.split('_').filter(p => p && !p.match(/^\d+$/));
+        if (parts.length > 0) {
+            for (let key of keys) {
+                const keyLower = key.toLowerCase();
+                if (parts.every(part => keyLower.includes(part))) {
+                    console.log(`Using fuzzy match: ${targetName} -> ${key}`);
+                    return key;
+                }
             }
         }
         
@@ -401,6 +454,19 @@ class LeonAnimator {
         
         if (!actualAnimName) {
             console.warn(`❌ Animation '${animName}' NOT FOUND. Available animations:`, Object.keys(this.actions));
+            // Fallback: play first available animation so model doesn't freeze
+            const fallbackName = Object.keys(this.actions)[0];
+            if (fallbackName) {
+                console.log(`  → Using fallback animation: ${fallbackName}`);
+                const fallbackAction = this.actions[fallbackName];
+                fallbackAction.reset();
+                fallbackAction.clampWhenFinished = !shouldLoop;
+                fallbackAction.loop = shouldLoop ? THREE.LoopRepeat : THREE.LoopOnce;
+                fallbackAction.fadeIn(0.2);
+                fallbackAction.play();
+                this.currentAction = fallbackAction;
+                return fallbackAction;
+            }
             return;
         }
         
@@ -483,6 +549,64 @@ async function loadLeonModel() {
     });
 }
 
+// --- LOAD CLAIRE MODEL ---
+async function loadClaireModel() {
+    return new Promise((resolve, reject) => {
+        const loader = new GLTFLoader();
+        loader.load(
+            'assets/claire/claire.glb',
+            (gltf) => {
+                const model = gltf.scene;
+                model.scale.set(0.875, 0.875, 0.875); // Same scale as Leon
+                model.rotation.y = 0; // Face forward (don't rotate)
+                model.castShadow = true;
+                model.traverse(node => {
+                    node.castShadow = true;
+                    node.receiveShadow = true;
+                    
+                    // Fix transparency issues more selectively
+                    if (node.material) {
+                        const materials = Array.isArray(node.material) ? node.material : [node.material];
+                        materials.forEach(material => {
+                            // Only fix materials that have transparency but full opacity
+                            if (material.transparent && material.opacity >= 1.0) {
+                                material.transparent = false;
+                                material.needsUpdate = true;
+                            }
+                            // Ensure proper depth testing
+                            material.depthTest = true;
+                            material.depthWrite = true;
+                        });
+                    }
+                });
+                
+                // Store animations on the model so animator can access them
+                model.animations = gltf.animations;
+                
+                // Debug: Log all animations in the model with detailed info
+                console.log('=== CLAIRE MODEL LOADED ===');
+                console.log('Total Animations:', gltf.animations.length);
+                const animList = gltf.animations.map((clip, i) => `[${i}] ${clip.name} (${clip.duration.toFixed(2)}s)`).join('\n');
+                console.log('Animation Names:\n' + animList);
+                
+                if (gltf.animations.length === 0) {
+                    console.error('❌ ERROR: Claire model has NO ANIMATIONS!');
+                    console.error('Please check that your claire.glb file has animation clips.');
+                }
+                
+                resolve(model);
+            },
+            (progress) => {
+                // Optional: track loading progress
+            },
+            (error) => {
+                console.error('Failed to load Claire model:', error);
+                reject(error);
+            }
+        );
+    });
+}
+
 // --- LOAD ZOMBIE1 MODEL ---
 async function loadZombie1Model() {
     return new Promise((resolve, reject) => {
@@ -537,6 +661,60 @@ async function loadZombie1Model() {
     });
 }
 
+// --- LOAD ZOMBIE2 MODEL ---
+async function loadZombie2Model() {
+    return new Promise((resolve, reject) => {
+        const loader = new GLTFLoader();
+        let timeoutId = setTimeout(() => {
+            reject(new Error('Zombie2 model loading timeout - check if assets/zombie/zombie2/zombie2.glb exists'));
+        }, 3000);
+        
+        loader.load(
+            'assets/zombie/zombie2/zombie2.glb',
+            (gltf) => {
+                clearTimeout(timeoutId);
+                const model = gltf.scene;
+                model.scale.set(3.0, 3.0, 3.0); // Same scale as zombie1
+                model.rotation.y = 0;
+                model.castShadow = true;
+                model.traverse(node => {
+                    node.castShadow = true;
+                    node.receiveShadow = true;
+                    
+                    if (node.material) {
+                        const materials = Array.isArray(node.material) ? node.material : [node.material];
+                        materials.forEach(material => {
+                            if (material.transparent && material.opacity >= 1.0) {
+                                material.transparent = false;
+                                material.needsUpdate = true;
+                            }
+                            material.depthTest = true;
+                            material.depthWrite = true;
+                        });
+                    }
+                });
+                
+                model.animations = gltf.animations;
+                console.log('✓ Zombie2 model loaded successfully with', gltf.animations.length, 'animations:', gltf.animations.map(c => c.name));
+                
+                resolve(model);
+            },
+            (progress) => {
+                if (progress.total > 0) {
+                    console.log('Loading zombie2.glb:', Math.round((progress.loaded / progress.total) * 100) + '%');
+                }
+            },
+            (error) => {
+                clearTimeout(timeoutId);
+                console.error('❌ Failed to load Zombie2 model:', error.message || error);
+                console.error('   Tried to load from: assets/zombie/zombie2/zombie2.glb');
+                console.error('   Make sure the file exists and the path is correct');
+                reject(error);
+            }
+        );
+    });
+}
+
 function createBlockPlayer(color) {
     const group = new THREE.Group();
     
@@ -580,6 +758,8 @@ function selectCharacter(type) {
     currentCharacter = type;
     leonModel = null;
     leonAnimator = null;
+    claireModel = null;
+    claireAnimator = null;
     
     // Load Leon model asynchronously, or create block models for others
     if (type === 'leon') {
@@ -602,6 +782,49 @@ function selectCharacter(type) {
             }, 50);
         }).catch(err => {
             console.error('Failed to load Leon model, using block model:', err);
+            player = createBlockPlayer(CHARACTERS[type].color);
+            scene.add(player);
+            initializeCharacter(type);
+        });
+    } else if (type === 'claire') {
+        loadClaireModel().then(model => {
+            player = model;
+            player.position.set(0, 0, 0);
+            player.rotation.order = 'YXZ'; // Ensure consistent rotation order
+            scene.add(player);
+            
+            // Initialize animator with small delay to ensure model is fully loaded
+            setTimeout(() => {
+                claireAnimator = new LeonAnimator(player); // Reuse LeonAnimator - it's generic
+                
+                // Debug: detailed diagnostics
+                const availableAnims = Object.keys(claireAnimator.actions);
+                const expectedAnims = Object.values(CLAIRE_ANIMATIONS);
+                
+                console.log('=== CLAIRE ANIMATOR INITIALIZATION ===');
+                console.log('Available animations in claire.glb:', availableAnims);
+                console.log('Expected animations in CLAIRE_ANIMATIONS:', expectedAnims);
+                
+                // Check for missing animations
+                const missing = expectedAnims.filter(anim => !availableAnims.includes(anim) && !availableAnims.some(a => a.toLowerCase() === anim.toLowerCase()));
+                if (missing.length > 0) {
+                    console.warn('⚠️  Missing animations:', missing);
+                    console.warn('Please update CLAIRE_ANIMATIONS to match the actual animation names in claire.glb');
+                }
+                
+                if (claireAnimator && availableAnims.length > 0) {
+                    // Play first available animation as safe default
+                    const firstAnim = availableAnims[0];
+                    console.log(`Playing first animation as fallback: ${firstAnim}`);
+                    claireAnimator.playAnimation(firstAnim, true);
+                } else {
+                    console.error('Failed to initialize animations for Claire - no animations found');
+                }
+                
+                initializeCharacter(type);
+            }, 50);
+        }).catch(err => {
+            console.error('Failed to load Claire model, using block model:', err);
             player = createBlockPlayer(CHARACTERS[type].color);
             scene.add(player);
             initializeCharacter(type);
@@ -674,6 +897,11 @@ function equipWeapon(key) {
     // For Leon model, play appropriate idle animation
     if (currentCharacter === 'leon' && leonAnimator) {
         leonAnimator.playAnimation(getLeonIdleAnimation(), true);
+    }
+    
+    // For Claire model, play appropriate idle animation
+    if (currentCharacter === 'claire' && claireAnimator) {
+        claireAnimator.playAnimation(getClaireIdleAnimation(), true);
     }
     
     // For block models
@@ -767,6 +995,59 @@ function getNextStabAnimation() {
     return stabs[nextIndex];
 }
 
+// --- CLAIRE ANIMATION HELPERS ---
+function getClaireIdleAnimation() {
+    switch(gameState.currentWeapon) {
+        case 'knife':
+            return CLAIRE_ANIMATIONS.knife_idle;
+        case 'pistol':
+            return CLAIRE_ANIMATIONS.pistol_idle;
+        case 'smg':
+            return CLAIRE_ANIMATIONS.smg_idle;
+        default:
+            return CLAIRE_ANIMATIONS.pistol_idle;
+    }
+}
+
+function getClaireWalkAnimation() {
+    switch(gameState.currentWeapon) {
+        case 'knife':
+            return CLAIRE_ANIMATIONS.knife_walk;
+        case 'pistol':
+            return CLAIRE_ANIMATIONS.pistol_walk;
+        case 'smg':
+            return CLAIRE_ANIMATIONS.smg_walk;
+        default:
+            return CLAIRE_ANIMATIONS.pistol_walk;
+    }
+}
+
+function getClaireRunAnimation() {
+    switch(gameState.currentWeapon) {
+        case 'knife':
+            return CLAIRE_ANIMATIONS.knife_run;
+        case 'pistol':
+            return CLAIRE_ANIMATIONS.pistol_run;
+        case 'smg':
+            return CLAIRE_ANIMATIONS.smg_run;
+        default:
+            return CLAIRE_ANIMATIONS.pistol_run;
+    }
+}
+
+function getClaireBackwardAnimation() {
+    switch(gameState.currentWeapon) {
+        case 'knife':
+            return CLAIRE_ANIMATIONS.knife_back;
+        case 'pistol':
+            return CLAIRE_ANIMATIONS.pistol_back;
+        case 'smg':
+            return CLAIRE_ANIMATIONS.smg_back;
+        default:
+            return CLAIRE_ANIMATIONS.pistol_back;
+    }
+}
+
 // --- ENEMY ---
 function createBlockZombie() {
     const group = new THREE.Group();
@@ -792,6 +1073,38 @@ function createBlockZombie() {
     group.add(leftArm);
 
     const rightArm = new THREE.Mesh(armGeo, new THREE.MeshStandardMaterial({ color: 0x228822 }));
+    rightArm.position.set(0.35, 1.4, 0.4);
+    rightArm.rotation.x = -Math.PI / 2;
+    group.add(rightArm);
+
+    return group;
+}
+
+function createZombie2BlockModel() {
+    const group = new THREE.Group();
+    // Slightly different color scheme for zombie2 (more blue/grey tint)
+    const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.5, 1.8, 0.3),
+        new THREE.MeshStandardMaterial({ color: 0x1a4d5c })
+    );
+    body.position.y = 0.9;
+    body.castShadow = true;
+    group.add(body);
+    
+    const head = new THREE.Mesh(
+        new THREE.BoxGeometry(0.3, 0.3, 0.3),
+        new THREE.MeshStandardMaterial({ color: 0x2d7a8a })
+    );
+    head.position.set(0, 1.95, 0.1);
+    group.add(head);
+
+    const armGeo = new THREE.BoxGeometry(0.1, 0.7, 0.1);
+    const leftArm = new THREE.Mesh(armGeo, new THREE.MeshStandardMaterial({ color: 0x1a4d5c }));
+    leftArm.position.set(-0.35, 1.4, 0.4);
+    leftArm.rotation.x = -Math.PI / 2;
+    group.add(leftArm);
+
+    const rightArm = new THREE.Mesh(armGeo, new THREE.MeshStandardMaterial({ color: 0x1a4d5c }));
     rightArm.position.set(0.35, 1.4, 0.4);
     rightArm.rotation.x = -Math.PI / 2;
     group.add(rightArm);
@@ -835,6 +1148,11 @@ function update(dt) {
     // Update Leon animator if active (even during death animation)
     if (currentCharacter === 'leon' && leonAnimator) {
         leonAnimator.update(dt);
+    }
+    
+    // Update Claire animator if active (even during death animation)
+    if (currentCharacter === 'claire' && claireAnimator) {
+        claireAnimator.update(dt);
     }
     
     // If death animation is playing, only update animator and camera - skip all other game logic
@@ -972,6 +1290,53 @@ function update(dt) {
         }
     }
 
+    // Update Claire animations based on state (PRIORITY ORDER)
+    if (currentCharacter === 'claire' && claireAnimator) {
+        let targetAnim = null;
+        
+        // Priority 1: Dancing (overrides everything)
+        if (gameState.isDancing) {
+            // Dance animation is already playing, don't interrupt
+            targetAnim = null; // Skip animation update
+        }
+        // Priority 2: Reloading
+        else if (gameState.isReloading) {
+            // Reload animation is already playing from startReload()
+            targetAnim = null; // Skip animation update
+        }
+        // Priority 3: Aiming
+        else if (input.aim) {
+            if (gameState.currentWeapon === 'pistol') {
+                targetAnim = CLAIRE_ANIMATIONS.pistol_aim;
+            } else if (gameState.currentWeapon === 'smg') {
+                targetAnim = CLAIRE_ANIMATIONS.smg_aim;
+            } else {
+                targetAnim = getClaireIdleAnimation();
+            }
+        }
+        // Priority 4: Movement
+        else if (moveDirection === 'run') {
+            targetAnim = getClaireRunAnimation();
+        } else if (moveDirection === 'forward') {
+            targetAnim = getClaireWalkAnimation();
+        } else if (moveDirection === 'backward') {
+            targetAnim = getClaireBackwardAnimation();
+        }
+        // Priority 5: Idle (default)
+        else {
+            targetAnim = getClaireIdleAnimation();
+        }
+        
+        // Only play animation if target changed from last frame
+        if (targetAnim && targetAnim !== gameState.lastAnimationName) {
+            console.log(`[ANIM] ${gameState.lastAnimationName} → ${targetAnim} (moveDir: ${moveDirection}, aim: ${input.aim})`);
+            const result = claireAnimator.playAnimation(targetAnim, true);
+            if (result) {
+                gameState.lastAnimationName = targetAnim;
+            }
+        }
+    }
+
     // 4. Fire
     if (input.fire && !gameState.isReloading && !gameState.isDancing) {
         // Only allow firing when aiming (RMB held down)
@@ -990,14 +1355,26 @@ function update(dt) {
         
         if (gameState.currentWeapon === 'knife') performMelee();
         else shootGun();
-        input.fire = false;
+        
+        // For non-automatic weapons, consume the fire input
+        const cfg = WEAPONS[gameState.currentWeapon];
+        if (!cfg.isAutomatic) {
+            input.fire = false;
+        }
     }
     
-    // 5. Dance (Leon only, M key)
-    if (currentCharacter === 'leon' && input.m && !gameState.isDancing) {
+    // 5. Dance (M key)
+    if (input.m && !gameState.isDancing) {
         gameState.isDancing = true;
-        if (leonAnimator) {
+        if (currentCharacter === 'leon' && leonAnimator) {
             leonAnimator.playAnimation(LEON_ANIMATIONS.dance, true); // Loop continuously
+        } else if (currentCharacter === 'claire' && claireAnimator) {
+            // Alternate between dance1 and dance2 for Claire
+            const danceAnim = gameState.lastDanceAnimation === CLAIRE_ANIMATIONS.dance1 
+                ? CLAIRE_ANIMATIONS.dance2 
+                : CLAIRE_ANIMATIONS.dance1;
+            claireAnimator.playAnimation(danceAnim, true);
+            gameState.lastDanceAnimation = danceAnim;
         }
         input.m = false;
     }
@@ -1005,8 +1382,10 @@ function update(dt) {
     // Cancel dance if any action is pressed
     if (gameState.isDancing && (input.w || input.s || input.a || input.d || input.aim || input.fire || gameState.isReloading)) {
         gameState.isDancing = false;
-        if (leonAnimator) {
+        if (currentCharacter === 'leon' && leonAnimator) {
             leonAnimator.playAnimation(getLeonIdleAnimation(), true);
+        } else if (currentCharacter === 'claire' && claireAnimator) {
+            claireAnimator.playAnimation(getClaireIdleAnimation(), true);
         }
     }
 
@@ -1076,6 +1455,16 @@ function performHitscan() {
         let hitDistance = 0;
         let didHit = false;
         
+        // For model-based zombies, use extra-generous hitbox for fast-firing weapons
+        let headHitboxRadius = e.isModelBased ? 0.85 : 0.35;
+        let bodyHitboxRadius = e.isModelBased ? 1.4 : 0.6;
+        
+        // SMG gets even larger hitbox due to rapid fire
+        if (gameState.currentWeapon === 'smg') {
+            headHitboxRadius = e.isModelBased ? 1.2 : 0.5;
+            bodyHitboxRadius = e.isModelBased ? 1.8 : 0.9;
+        }
+        
         // Check headshot first (smaller hitbox, higher priority)
         if (e.head) {
             const headWorldPos = new THREE.Vector3();
@@ -1089,7 +1478,7 @@ function performHitscan() {
                 );
                 const distToHead = closestPoint.distanceTo(headWorldPos);
                 
-                if (distToHead < 0.35) { // Head hitbox radius
+                if (distToHead < headHitboxRadius) { // Head hitbox radius (larger for models)
                     isHeadshot = true;
                     didHit = true;
                 }
@@ -1108,7 +1497,7 @@ function performHitscan() {
                 );
                 const distToBody = closestPoint.distanceTo(bodyPos);
                 
-                if (distToBody < 0.6) { // Body hitbox radius
+                if (distToBody < bodyHitboxRadius) { // Body hitbox radius (larger for models)
                     didHit = true;
                 }
             }
@@ -1221,6 +1610,18 @@ function performMelee() {
         }, 600); // Adjust timing based on animation length
     }
     
+    // Claire animation for knife - single stab animation
+    if (currentCharacter === 'claire' && claireAnimator) {
+        claireAnimator.playAnimation(CLAIRE_ANIMATIONS.knife_stab, false);
+        
+        // Return to knife idle after stab completes
+        setTimeout(() => {
+            if (claireAnimator && gameState.currentWeapon === 'knife') {
+                claireAnimator.playAnimation(CLAIRE_ANIMATIONS.knife_idle, true);
+            }
+        }, 600); // Adjust timing based on animation length
+    }
+    
     // Block model animation
     const arm = player.getObjectByName('RightArm');
     if (arm) {
@@ -1287,31 +1688,58 @@ function damageEnemy(e, amt, isHeadshot = false) {
     if (e.hp <= 0) {
         e.isDying = true;
         
+        // Increment defeat counter immediately (not waiting for removal)
+        gameState.enemiesDefeated++;
+        gameState.enemiesAlive--; // Remove from active count
+        updateUI();
+        
+        // Check if round complete
+        if (gameState.enemiesDefeated >= gameState.enemiesToSpawn) {
+            startRound(gameState.round + 1);
+        }
+        
+        // Play death animation for model-based zombies
+        if (e.animator) {
+            const deathAnim = Math.random() < 0.5 ? ZOMBIE_ANIMATIONS.death1 : ZOMBIE_ANIMATIONS.death2;
+            const action = e.animator.playAnimation(deathAnim, false);
+            if (action) {
+                action.clampWhenFinished = true;
+            }
+        }
+        
         const deathPos = e.group.position.clone();
         
         // 20% chance to drop something
         if (Math.random() < 0.20) {
-            const dropRoll = Math.random();
             let dropType;
-            if (dropRoll < 0.4) dropType = 'handgun_ammo';
-            else if (dropRoll < 0.8) dropType = 'shotgun_ammo';
-            else dropType = 'herb';
+            const dropRoll = Math.random();
+            
+            // Character-specific drops
+            if (currentCharacter === 'claire') {
+                // Claire: pistol ammo, SMG ammo, herb
+                if (dropRoll < 0.4) dropType = 'handgun_ammo';
+                else if (dropRoll < 0.8) dropType = 'smg_ammo';
+                else dropType = 'herb';
+            } else if (currentCharacter === 'hunk') {
+                // Hunk: magnum ammo, rifle ammo, herb
+                if (dropRoll < 0.4) dropType = 'magnum_ammo';
+                else if (dropRoll < 0.8) dropType = 'rifle_ammo';
+                else dropType = 'herb';
+            } else {
+                // Leon: pistol ammo, shotgun ammo, herb
+                if (dropRoll < 0.4) dropType = 'handgun_ammo';
+                else if (dropRoll < 0.8) dropType = 'shotgun_ammo';
+                else dropType = 'herb';
+            }
             
             createPickup(dropType, deathPos);
         }
         
-        // Remove enemy immediately from scene
-        scene.remove(e.group);
-        enemies = enemies.filter(z => z !== e);
-        gameState.enemiesAlive--;
-        
-        // Increment defeat counter and check for round advancement
-        gameState.enemiesDefeated++;
-        updateUI();
-        
-        if (gameState.enemiesDefeated >= gameState.enemiesToSpawn) {
-            startRound(gameState.round + 1);
-        }
+        // Remove enemy from scene after 5 seconds (animation duration)
+        setTimeout(() => {
+            scene.remove(e.group);
+            enemies = enemies.filter(z => z !== e);
+        }, 5000);
     }
 }
 
@@ -1328,6 +1756,11 @@ function startReload() {
         leonAnimator.playAnimation(LEON_ANIMATIONS.reload, false);
     }
     
+    // Claire reload animation
+    if (currentCharacter === 'claire' && claireAnimator) {
+        claireAnimator.playAnimation(CLAIRE_ANIMATIONS.reload, false);
+    }
+    
     setTimeout(() => {
         const needed = cfg.magSize - w.ammo;
         const take = Math.min(needed, w.reserve);
@@ -1339,6 +1772,11 @@ function startReload() {
         // Return to idle animation
         if (currentCharacter === 'leon' && leonAnimator) {
             leonAnimator.playAnimation(getLeonIdleAnimation(), true);
+        }
+        
+        // Return to idle animation for Claire
+        if (currentCharacter === 'claire' && claireAnimator) {
+            claireAnimator.playAnimation(getClaireIdleAnimation(), true);
         }
     }, cfg.reloadTime);
 }
@@ -1375,12 +1813,12 @@ function spawnEnemy() {
     // Spawn fat zombie if we haven't reached the limit for this round
     const isFat = currentFatZombies < maxFatZombiesThisRound && Math.random() < 0.3;
     
-    // Only try zombie1 model if enabled AND 50% chance
-    const useZombie1Model = CONFIG.USE_ZOMBIE1_MODELS && Math.random() < 0.5;
+    // Decide which model to spawn (50/50 for zombie1 vs zombie2, or block model)
+    const spawnModelChance = Math.random();
     
-    if (useZombie1Model) {
+    if (CONFIG.USE_ZOMBIE1_MODELS && spawnModelChance < 0.5) {
+        // Spawn zombie1 model
         loadZombie1Model().then(model => {
-            
             const angle = Math.random() * Math.PI * 2;
             model.position.set(
                 Math.sin(angle) * 20,
@@ -1412,7 +1850,6 @@ function spawnEnemy() {
             animator.playAnimation(ZOMBIE_ANIMATIONS.idle, true);
         }).catch(err => {
             console.error('Failed to load zombie1 model, using block model:', err.message);
-            // Fallback to block model if loading fails
             const blockEnemy = isFat ? createFatZombie() : createBlockZombie();
             const angle = Math.random() * Math.PI * 2;
             blockEnemy.position.set(Math.sin(angle) * 20, 0, Math.cos(angle) * 20);
@@ -1437,7 +1874,66 @@ function spawnEnemy() {
             });
             gameState.enemiesAlive++;
         });
+    } else if (CONFIG.USE_ZOMBIE1_MODELS && spawnModelChance < 1.0) {
+        // Spawn zombie2 model
+        loadZombie2Model().then(model => {
+            const angle = Math.random() * Math.PI * 2;
+            model.position.set(
+                Math.sin(angle) * 20,
+                0,
+                Math.cos(angle) * 20
+            );
+            scene.add(model);
+            
+            const animator = new ZombieAnimator(model);
+            const baseHp = isFat ? 200 : 100;
+            const zombieData = {
+                group: model,
+                head: model.children[0],
+                isFat: isFat,
+                hp: baseHp + (gameState.round * 20),
+                isLunging: false,
+                lungeTarget: null,
+                lungeSpeed: isFat ? 12 : 8,
+                lastLungeTime: 0,
+                animator: animator,
+                isModelBased: true,
+                lastAnimationName: null,
+                lastWalkVariation: Math.random() < 0.5 ? ZOMBIE_ANIMATIONS.walk1 : ZOMBIE_ANIMATIONS.walk2,
+                isDying: false
+            };
+            
+            enemies.push(zombieData);
+            gameState.enemiesAlive++;
+            animator.playAnimation(ZOMBIE_ANIMATIONS.idle, true);
+        }).catch(err => {
+            console.error('Failed to load zombie2 model, using block model:', err.message);
+            const blockEnemy = isFat ? createFatZombie() : createZombie2BlockModel();
+            const angle = Math.random() * Math.PI * 2;
+            blockEnemy.position.set(Math.sin(angle) * 20, 0, Math.cos(angle) * 20);
+            scene.add(blockEnemy);
+            
+            const head = blockEnemy.children.find(c => c.geometry && c.position.y > 1.5);
+            const baseHp = isFat ? 200 : 100;
+            enemies.push({
+                group: blockEnemy,
+                head: head,
+                isFat: isFat,
+                hp: baseHp + (gameState.round * 20),
+                isLunging: false,
+                lungeTarget: null,
+                lungeSpeed: isFat ? 12 : 8,
+                lastLungeTime: 0,
+                animator: null,
+                isModelBased: false,
+                lastAnimationName: null,
+                lastWalkVariation: Math.random() < 0.5 ? ZOMBIE_ANIMATIONS.walk1 : ZOMBIE_ANIMATIONS.walk2,
+                isDying: false
+            });
+            gameState.enemiesAlive++;
+        });
     } else {
+        // Spawn block model (50% chance)
         const blockEnemy = isFat ? createFatZombie() : createBlockZombie();
         spawnBlockEnemy(blockEnemy, isFat);
     }
@@ -1562,6 +2058,35 @@ function updateEnemies(dt) {
                     }, 500);
                 }
                 
+                if (gameState.hp > 0 && currentCharacter === 'claire' && claireAnimator) {
+                    let hitAnim;
+                    // Alternate between hit_pistol1 and hit_pistol2 for Claire
+                    if (gameState.lastHitAnimation !== CLAIRE_ANIMATIONS.hit_pistol1) {
+                        hitAnim = CLAIRE_ANIMATIONS.hit_pistol1;
+                        gameState.lastHitAnimation = CLAIRE_ANIMATIONS.hit_pistol1;
+                    } else {
+                        hitAnim = CLAIRE_ANIMATIONS.hit_pistol2;
+                        gameState.lastHitAnimation = CLAIRE_ANIMATIONS.hit_pistol2;
+                    }
+                    
+                    // Play hit animation completely
+                    claireAnimator.playAnimation(hitAnim, false);
+                    
+                    // Move player back or to the side to avoid another lunge
+                    const knockbackDir = new THREE.Vector3().subVectors(player.position, e.group.position).normalize();
+                    const sideDir = new THREE.Vector3(-knockbackDir.z, 0, knockbackDir.x).normalize(); // Perpendicular direction
+                    const useBack = Math.random() < 0.5;
+                    const moveDir = useBack ? knockbackDir : sideDir;
+                    player.position.add(moveDir.multiplyScalar(0.5)); // Move further away than before
+                    
+                    // Return to appropriate idle after hit animation
+                    setTimeout(() => {
+                        if (claireAnimator && gameState.hp > 0) {
+                            claireAnimator.playAnimation(getClaireIdleAnimation(), true);
+                        }
+                    }, 500);
+                }
+                
                 if (gameState.hp <= 0) {
                     gameState.isDead = true;
                     
@@ -1578,6 +2103,26 @@ function updateEnemies(dt) {
                         }
                         
                         const action = leonAnimator.playAnimation(deathAnim, false);
+                        if (action) {
+                            action.clampWhenFinished = true; // Freeze on last frame
+                        }
+                    }
+                    
+                    // Claire death animation based on equipped weapon - keep frozen on ground
+                    if (currentCharacter === 'claire' && claireAnimator) {
+                        let deathAnim;
+                        if (gameState.currentWeapon === 'knife') {
+                            deathAnim = CLAIRE_ANIMATIONS.knife_death;
+                        } else if (gameState.currentWeapon === 'smg') {
+                            deathAnim = CLAIRE_ANIMATIONS.smg_death;
+                        } else if (gameState.currentWeapon === 'pistol') {
+                            deathAnim = CLAIRE_ANIMATIONS.pistol_death;
+                        } else {
+                            // Rifle, magnum, or others - use generic death
+                            deathAnim = CLAIRE_ANIMATIONS.death;
+                        }
+                        
+                        const action = claireAnimator.playAnimation(deathAnim, false);
                         if (action) {
                             action.clampWhenFinished = true; // Freeze on last frame
                         }
@@ -1603,6 +2148,18 @@ function createPickup(type, position) {
         case 'shotgun_ammo':
             color = 0xff4444;
             label = 'SHOTGUN';
+            break;
+        case 'smg_ammo':
+            color = 0x66ccff;
+            label = 'SMG';
+            break;
+        case 'rifle_ammo':
+            color = 0x99ff99;
+            label = 'RIFLE';
+            break;
+        case 'magnum_ammo':
+            color = 0xffff00;
+            label = 'MAGNUM';
             break;
         case 'herb':
             color = 0x44ff44;
@@ -1654,6 +2211,21 @@ function collectPickup(type) {
         case 'shotgun_ammo':
             gameState.weaponStates.shotgun.reserve += 8;
             showMessage("SHOTGUN AMMO +8", '#ff4444');
+            setTimeout(() => showMessage(""), 1000);
+            break;
+        case 'smg_ammo':
+            gameState.weaponStates.smg.reserve += 20;
+            showMessage("SMG AMMO +20", '#66ccff');
+            setTimeout(() => showMessage(""), 1000);
+            break;
+        case 'rifle_ammo':
+            gameState.weaponStates.rifle.reserve += 25;
+            showMessage("RIFLE AMMO +25", '#99ff99');
+            setTimeout(() => showMessage(""), 1000);
+            break;
+        case 'magnum_ammo':
+            gameState.weaponStates.magnum.reserve += 6;
+            showMessage("MAGNUM AMMO +6", '#ffff00');
             setTimeout(() => showMessage(""), 1000);
             break;
         case 'herb':

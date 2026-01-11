@@ -1,18 +1,29 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Leon GLB Animation Inspector</title>
+    <title>GLB Animation Inspector</title>
     <style>
         body { font-family: monospace; background: #222; color: #0f0; padding: 20px; }
         h1 { color: #0ff; }
+        h2 { color: #0f0; margin-top: 30px; border-bottom: 2px solid #0f0; padding-bottom: 5px; }
         .animation { background: #111; padding: 8px; margin: 5px 0; border-left: 3px solid #0f0; }
         .count { color: #f0f; font-weight: bold; }
+        .error { color: #f00; }
+        .container { max-width: 1200px; margin: 0 auto; }
     </style>
 </head>
 <body>
-    <h1>Leon GLB Animation Inspector</h1>
-    <p>Loading leon.glb...</p>
-    <div id="content"></div>
+    <div class="container">
+        <h1>Character GLB Animation Inspector</h1>
+        
+        <h2>LEON</h2>
+        <p>Loading leon.glb...</p>
+        <div id="leon-content"></div>
+
+        <h2>CLAIRE</h2>
+        <p>Loading claire.glb...</p>
+        <div id="claire-content"></div>
+    </div>
 
     <script type="importmap">
         { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
@@ -22,14 +33,16 @@
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
         const loader = new GLTFLoader();
+        
+        // Load LEON
         loader.load('assets/Leon/leon.glb', (gltf) => {
             const animations = gltf.animations;
-            const content = document.getElementById('content');
+            const content = document.getElementById('leon-content');
             
             content.innerHTML = `<p class="count">Total Animations: ${animations.length}</p>`;
             
             if (animations.length === 0) {
-                content.innerHTML += '<p style="color: #f00;">ERROR: No animations found!</p>';
+                content.innerHTML += '<p class="error">ERROR: No animations found!</p>';
                 return;
             }
             
@@ -46,9 +59,39 @@
         },
         undefined,
         (error) => {
-            document.getElementById('content').innerHTML = `<p style="color: #f00;">ERROR: ${error.message}</p>`;
-            console.error('Failed to load:', error);
+            document.getElementById('leon-content').innerHTML = `<p class="error">ERROR: ${error.message}</p>`;
+            console.error('Failed to load Leon:', error);
+        });
+        
+        // Load CLAIRE
+        loader.load('assets/claire/claire.glb', (gltf) => {
+            const animations = gltf.animations;
+            const content = document.getElementById('claire-content');
+            
+            content.innerHTML = `<p class="count">Total Animations: ${animations.length}</p>`;
+            
+            if (animations.length === 0) {
+                content.innerHTML += '<p class="error">ERROR: No animations found!</p>';
+                return;
+            }
+            
+            animations.forEach((clip, i) => {
+                const duration = clip.duration.toFixed(3);
+                content.innerHTML += `<div class="animation">${i+1}. <strong>"${clip.name}"</strong> (${duration}s)</div>`;
+            });
+            
+            console.log('=== CLAIRE GLB ANIMATIONS ===');
+            console.log('Total:', animations.length);
+            animations.forEach((clip, i) => {
+                console.log(`${i+1}. "${clip.name}" - ${clip.duration.toFixed(3)}s`);
+            });
+        },
+        undefined,
+        (error) => {
+            document.getElementById('claire-content').innerHTML = `<p class="error">ERROR: ${error.message}</p>`;
+            console.error('Failed to load Claire:', error);
         });
     </script>
 </body>
 </html>
+

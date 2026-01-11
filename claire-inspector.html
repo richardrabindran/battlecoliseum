@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claire Animation Inspector</title>
+    <style>
+        body { font-family: monospace; background: #222; color: #0f0; padding: 20px; }
+        h1 { color: #0ff; }
+        .animation { background: #111; padding: 8px; margin: 5px 0; border-left: 3px solid #0f0; }
+        .count { color: #f0f; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Claire GLB Animation Inspector</h1>
+    <p>Loading claire.glb...</p>
+    <div id="content"></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        const loader = new GLTFLoader();
+        loader.load('assets/claire/claire.glb', (gltf) => {
+            const animations = gltf.animations;
+            const content = document.getElementById('content');
+            
+            content.innerHTML = `<p class="count">Total Animations: ${animations.length}</p>`;
+            
+            animations.forEach(clip => {
+                const div = document.createElement('div');
+                div.className = 'animation';
+                div.textContent = `${clip.name} (duration: ${clip.duration.toFixed(2)}s)`;
+                content.appendChild(div);
+            });
+            
+            if (animations.length === 0) {
+                const div = document.createElement('div');
+                div.style.color = '#f00';
+                div.textContent = 'ERROR: No animations found in claire.glb!';
+                content.appendChild(div);
+            }
+        }, undefined, (err) => {
+            document.getElementById('content').innerHTML = `<p style="color:red;">Error loading: ${err.message}</p>`;
+        });
+    </script>
+</body>
+</html>
