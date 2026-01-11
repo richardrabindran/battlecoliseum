@@ -19,6 +19,7 @@ body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courie
 }
 
 #round-hud { position: absolute; top: 20px; left: 20px; color: #0f0; font-size: 24px; font-weight: bold; }
+#enemies-hud { position: absolute; top: 60px; left: 20px; color: #0f0; font-size: 20px; font-weight: bold; }
 #health-hud { position: absolute; bottom: 20px; left: 20px; color: #0f0; font-size: 24px; font-weight: bold; }
 #weapon-hud { position: absolute; bottom: 20px; right: 20px; color: #0f0; font-size: 24px; font-weight: bold; text-align: right; }
 #center-msg { 

@@ -256,7 +256,7 @@ let gameState = {
     isReloading: false,
     aimPitch: 0,
     round: 1,
-    enemiesToSpawn: 0, enemiesSpawned: 0, enemiesAlive: 0,
+    enemiesToSpawn: 0, enemiesSpawned: 0, enemiesAlive: 0, enemiesDefeated: 0,
     lastSpawnTime: 0,
     lastHitTime: 0,
     isDancing: false,
@@ -1240,6 +1240,9 @@ function performMelee() {
 }
 
 function damageEnemy(e, amt, isHeadshot = false) {
+    // Prevent damage to already-dead enemies
+    if (e.isDying) return;
+    
     e.hp -= amt;
     
     // Visual feedback
@@ -1284,27 +1287,7 @@ function damageEnemy(e, amt, isHeadshot = false) {
     if (e.hp <= 0) {
         e.isDying = true;
         
-        // Play death animation for model-based zombies
-        if (e.animator) {
-            const deathAnim = Math.random() < 0.5 ? ZOMBIE_ANIMATIONS.death1 : ZOMBIE_ANIMATIONS.death2;
-            const action = e.animator.playAnimation(deathAnim, false);
-            if (action) {
-                action.clampWhenFinished = true;
-            }
-        }
-        
         const deathPos = e.group.position.clone();
-        
-        // Remove enemy after 5 seconds
-        setTimeout(() => {
-            scene.remove(e.group);
-            enemies = enemies.filter(z => z !== e);
-            gameState.enemiesAlive--;
-            
-            if (gameState.enemiesAlive === 0 && gameState.enemiesSpawned >= gameState.enemiesToSpawn) {
-                startRound(gameState.round + 1);
-            }
-        }, 5000);
         
         // 20% chance to drop something
         if (Math.random() < 0.20) {
@@ -1314,7 +1297,20 @@ function damageEnemy(e, amt, isHeadshot = false) {
             else if (dropRoll < 0.8) dropType = 'shotgun_ammo';
             else dropType = 'herb';
             
-            setTimeout(() => createPickup(dropType, deathPos), 200);
+            createPickup(dropType, deathPos);
+        }
+        
+        // Remove enemy immediately from scene
+        scene.remove(e.group);
+        enemies = enemies.filter(z => z !== e);
+        gameState.enemiesAlive--;
+        
+        // Increment defeat counter and check for round advancement
+        gameState.enemiesDefeated++;
+        updateUI();
+        
+        if (gameState.enemiesDefeated >= gameState.enemiesToSpawn) {
+            startRound(gameState.round + 1);
         }
     }
 }
@@ -1357,15 +1353,19 @@ function performQuickTurn() {
 
 function startRound(r) {
     gameState.round = r;
-    gameState.enemiesToSpawn = 3 + r;
+    gameState.enemiesToSpawn = 5 + (r - 1) * 2;
     gameState.enemiesSpawned = 0;
     gameState.enemiesAlive = 0;
+    gameState.enemiesDefeated = 0;
     showMessage(`ROUND ${r}`);
     setTimeout(() => showMessage(""), 2000);
 }
 
 function spawnEnemy() {
     if (gameState.enemiesSpawned >= gameState.enemiesToSpawn) return;
+    
+    // Increment counter immediately to prevent race condition
+    gameState.enemiesSpawned++;
     
     // Calculate fat zombie spawn rate: 1 per 5 rounds
     const fatZombiesPerRound = Math.floor(gameState.round / 5) + 1;
@@ -1380,8 +1380,6 @@ function spawnEnemy() {
     
     if (useZombie1Model) {
         loadZombie1Model().then(model => {
-            // Only spawn if we're still under the limit (check again in case timing changed)
-            if (enemies.filter(e => !e.isDying).length >= gameState.enemiesToSpawn) return;
             
             const angle = Math.random() * Math.PI * 2;
             model.position.set(
@@ -1412,7 +1410,6 @@ function spawnEnemy() {
             enemies.push(zombieData);
             gameState.enemiesAlive++;
             animator.playAnimation(ZOMBIE_ANIMATIONS.idle, true);
-            console.log('✓ Spawned zombie1 model at', model.position);
         }).catch(err => {
             console.error('Failed to load zombie1 model, using block model:', err.message);
             // Fallback to block model if loading fails
@@ -1444,8 +1441,6 @@ function spawnEnemy() {
         const blockEnemy = isFat ? createFatZombie() : createBlockZombie();
         spawnBlockEnemy(blockEnemy, isFat);
     }
-    
-    gameState.enemiesSpawned++;
 }
 
 function spawnBlockEnemy(enemy, isFat) {
@@ -1753,6 +1748,10 @@ function updateUI() {
     document.getElementById('ammo-count').style.color = gameState.isReloading ? '#ffff00' : '#ffffff';
     document.getElementById('weapon-name').innerText = gameState.currentWeapon.toUpperCase();
     document.getElementById('round-hud').innerText = `ROUND: ${gameState.round}`;
+    
+    // Update enemies remaining counter
+    const enemiesRemaining = Math.max(0, gameState.enemiesToSpawn - gameState.enemiesDefeated);
+    document.getElementById('enemies-remaining').innerText = enemiesRemaining;
     
     // Resident Evil style health system
     const hpEl = document.getElementById('hp-text');
