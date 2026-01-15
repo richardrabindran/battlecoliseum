@@ -313,9 +313,14 @@ let bullets = [], enemies = [], pickups = [];
 let input = { w: false, s: false, a: false, d: false, shift: false, aim: false, fire: false, mouseX: 0, mouseY: 0, m: false, l: false, space: false };
 let inventory = [];
 let inventoryOpen = false;
+let freecamVelocity = new THREE.Vector3(); // For freecam movement
+const FREECAM_SPEED = 10; // Units per second
 let currentCharacter = 'leon'; // Track current character
 let cameraYaw = 0; // Camera yaw rotation (horizontal) for aiming
 let cameraPitch = 0; // Camera pitch rotation (vertical) for aiming
+
+// Weapon models
+let pistolModel = null; // Loaded pistol.glb model template
 
 // Aim mode settings
 let gameSettings = {
@@ -368,7 +373,10 @@ let gameState = {
     
     // Death animation state
     isPlayingDeathAnimation: false,
-    deathAnimationComplete: false
+    deathAnimationComplete: false,
+    
+    // Freecam state
+    isFreecam: false
 };
 
 // Audio elements for music
@@ -412,6 +420,21 @@ function playCharacterMusic(character) {
     }
 }
 
+// Load pistol model
+function loadPistolModel() {
+    const loader = new GLTFLoader();
+    loader.load('assets/weapons/pistol/pistol.glb', 
+        (gltf) => {
+            pistolModel = gltf.scene;
+            console.log('✓ Pistol model loaded successfully');
+        },
+        undefined,
+        (error) => {
+            console.error('Failed to load pistol model:', error);
+        }
+    );
+}
+
 clock = new THREE.Clock();
 
 init();
@@ -419,6 +442,10 @@ init();
 function init() {
     // Play menu music on initialization
     menuMusic.play().catch(err => console.log('Menu music autoplay blocked:', err));
+    
+    // Load weapon models
+    loadPistolModel();
+    
     // 1. Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x111111);
@@ -473,6 +500,7 @@ function setupUI() {
     document.getElementById('btn-claire').onclick = () => selectCharacter('claire');
     document.getElementById('btn-hunk').onclick = () => selectCharacter('hunk');
     document.getElementById('btn-resume').onclick = togglePause;
+    document.getElementById('btn-freecam').onclick = toggleFreecam;
     document.getElementById('btn-settings').onclick = openSettings;
     document.getElementById('btn-settings-back').onclick = closeSettings;
     
@@ -1286,14 +1314,31 @@ function equipWeapon(key) {
     }
 
     const wCfg = WEAPONS[key];
-    const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(wCfg.scale.x, wCfg.scale.y, wCfg.scale.z),
-        new THREE.MeshStandardMaterial({ color: wCfg.color })
-    );
+    let mesh;
     
-    // Attach to hand
-    mesh.position.set(0, -0.6, 0.2);
-    mesh.castShadow = true;
+    // Use loaded pistol model for pistol weapon
+    if (key === 'pistol' && pistolModel) {
+        mesh = pistolModel.clone();
+        // Position and scale the model to fit in the player's hand
+        mesh.position.set(0, -0.6, 0.2);
+        mesh.scale.set(1, 1, 1); // Adjust scale if needed based on model size
+        // Traverse and ensure shadows
+        mesh.traverse((child) => {
+            if (child.isMesh) {
+                child.castShadow = true;
+            }
+        });
+    } else {
+        // Use box geometry for other weapons
+        mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(wCfg.scale.x, wCfg.scale.y, wCfg.scale.z),
+            new THREE.MeshStandardMaterial({ color: wCfg.color })
+        );
+        
+        // Attach to hand
+        mesh.position.set(0, -0.6, 0.2);
+        mesh.castShadow = true;
+    }
     
     arm.add(mesh);
     currentWeaponMesh = mesh;
@@ -1535,6 +1580,41 @@ function update(dt) {
     
     // Stop other game logic if dead (but before death animation state is set)
     if (!gameState.isPlaying || gameState.isPaused || gameState.isDead) return;
+    
+    // FREECAM MODE
+    if (gameState.isFreecam) {
+        // Handle freecam movement with WASD
+        const moveSpeed = FREECAM_SPEED;
+        const moveDirection = new THREE.Vector3();
+        
+        if (input.w) moveDirection.z += 1;
+        if (input.s) moveDirection.z -= 1;
+        if (input.a) moveDirection.x -= 1;
+        if (input.d) moveDirection.x += 1;
+        
+        // Normalize movement direction
+        if (moveDirection.length() > 0) {
+            moveDirection.normalize();
+            
+            // Apply movement relative to camera rotation (pitch and yaw)
+            const camera_matrix = new THREE.Matrix4();
+            camera_matrix.lookAt(camera.position, new THREE.Vector3().addVectors(camera.position, new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)), camera.up);
+            camera_matrix.invert();
+            
+            moveDirection.applyMatrix4(camera_matrix);
+            moveDirection.normalize();
+            
+            freecamVelocity.copy(moveDirection).multiplyScalar(moveSpeed);
+        } else {
+            freecamVelocity.multiplyScalar(0.8); // Decelerate
+        }
+        
+        // Apply velocity to camera
+        camera.position.addScaledVector(freecamVelocity, dt);
+        
+        updateCamera();
+        return; // Skip normal game logic during freecam
+    }
 
     // 1. Quickturn Logic
     if (gameState.isQuickTurning) {
@@ -3041,6 +3121,19 @@ function togglePause() {
     }
 }
 
+function toggleFreecam() {
+    gameState.isFreecam = !gameState.isFreecam;
+    freecamVelocity.set(0, 0, 0); // Reset velocity
+    
+    if (gameState.isFreecam) {
+        console.log('✓ Freecam enabled - Use WASD to move, mouse to look around');
+        document.getElementById('btn-freecam').textContent = 'EXIT FREECAM';
+    } else {
+        console.log('✓ Freecam disabled - Normal gameplay resumed');
+        document.getElementById('btn-freecam').textContent = 'FREECAM';
+    }
+}
+
 function onKey(e, down) {
     if (e.code === 'KeyW') input.w = down;
     if (e.code === 'KeyS') input.s = down;
@@ -3083,10 +3176,22 @@ function onMouse(e, down) {
 }
 
 function onMouseMove(e) {
-    // Capture mouse movement for aiming
-    if (!gameState.isPaused && !inventoryOpen && input.aim) {
-        input.mouseX = e.movementX;
-        input.mouseY = e.movementY;
+    // Capture mouse movement for aiming or freecam
+    if (!gameState.isPaused && !inventoryOpen) {
+        if (gameState.isFreecam) {
+            // Freecam mouse look
+            const sensitivity = CONFIG.MOUSE_SENSITIVITY;
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y -= e.movementX * sensitivity;
+            camera.rotation.x -= e.movementY * sensitivity;
+            
+            // Clamp pitch to prevent camera flipping
+            camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+        } else if (input.aim) {
+            // Normal aiming
+            input.mouseX = e.movementX;
+            input.mouseY = e.movementY;
+        }
     }
 }
 
